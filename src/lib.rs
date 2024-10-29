@@ -163,7 +163,7 @@ pub mod bgst_processing {
     /// ### Parameters
     /// - `bgst_contents`: The raw data of a bgst3 file.
     /// ### Returns
-    /// - a `CompressedImageList` struct
+    /// - an `ImageList` struct
     pub fn get_raw_images(
         bgst_contents: &Vec<u8>
     ) -> Result<ImageList> {
@@ -212,7 +212,7 @@ pub mod bgst_processing {
         for i in 0..grid_entries.len() {
             let entry = &grid_entries[i];
 
-            if entry.main_image_index > -1 {
+            if entry.main_image_index > -1 && entry.main_image_index < header.image_count as i16 {
                 let encoded = Vec::from(&image_data[entry.main_image_index as usize * COMPRESSED_IMAGE_SIZE..entry.main_image_index as usize * COMPRESSED_IMAGE_SIZE + COMPRESSED_IMAGE_SIZE]);
                 let decoded = gctex::decode(
                     &encoded,
@@ -226,7 +226,7 @@ pub mod bgst_processing {
                 images.push(decoded);
             }
 
-            if entry.mask_image_index > -1 {
+            if entry.mask_image_index > -1 && entry.mask_image_index < header.image_count as i16 {
                 let encoded = Vec::from(&image_data[entry.mask_image_index as usize * COMPRESSED_IMAGE_SIZE..entry.mask_image_index as usize * COMPRESSED_IMAGE_SIZE + COMPRESSED_IMAGE_SIZE]);
                 let decoded = gctex::decode(
                     &encoded,
