@@ -174,12 +174,6 @@ pub mod bgst_processing {
         
         let header = Header::from_validated_header_bytes(&bgst_contents);
 
-        // for even numbered indices, the image is (most likely)
-        // a CMPR image. for odd numbered indices, the image is
-        // (most likely) an I4 mask.
-        
-        // if this is inaccurate, i guess i'll find out the hard way
-  
         let mut grid_entries = Vec::new();
         
         let mut current_offset = header.info_offset;
