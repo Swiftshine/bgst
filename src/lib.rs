@@ -1,54 +1,150 @@
 use anyhow::{Result, bail};
 use std::fs;
 use std::io::Cursor;
+use image::*;
+use gctex;
+use byteorder::{ByteOrder, BigEndian};
+
+
+const HEADER_SIZE: usize = 0x40;
+const GRID_ENTRY_SIZE: usize = 0x10;
+const COMPRESSED_IMAGE_SIZE: usize = 0x20000;
+
+/// A list of layers, described as "scenes" ingame.
+enum SceneIndex {
+    Far05 = 0,
+    Far04 = 1,
+    Far03 = 2,
+    Far02 = 3,
+    Far01 = 4,
+    Map = 5,
+    Game = 6,
+    Near01 = 7,
+    Near02 = 8,
+    Near03 = 9,
+    Near04 = 10,
+    Near05 = 11,
+}
+
+/// A stripped-down version of the header found
+/// in BGST files. Unknown fields are named based
+/// on the file offset.
+/// 
+/// ### Fields
+/// - `_unk_4`: Currently an unknown value.
+/// - `image_width`: The width of every image in the grid, in pixels.
+/// - `image_height`: The height of every image in the grid, in pixels.
+/// - `grid_width`: The number of rows the grid has.
+/// - `grid_height`: The number of columns the grid has.
+/// - `image_count`: The number of images in the file.
+/// - `layer_enabled`: Indicates which of the 12 rendering layers from the game are available to entries.
+/// - `info_offset`: Offset to entry info.
+/// - `image_data_offset`: Offset to the array of compressed image data.
+struct Header {
+    _unk_4: u32,
+    image_width: u32,
+    image_height: u32,
+    _grid_width: u32,
+    _grid_height: u32,
+    image_count: u32,
+    _layer_enabled: [bool; 12],
+    info_offset: usize,
+    image_data_offset: usize
+}
+
+impl Header {
+    /// Creates a stripped-down header struct from a file
+    /// that has had its header **pre-validated**.
+    /// ### Parameters
+    /// - `header_contents`: Data containing the raw header.
+    /// ### Returns
+    /// - a `Header` struct
+    pub fn from_validated_header_bytes(
+        header_contents: &Vec<u8>
+    ) -> Header {
+        let _unk_4 = BigEndian::read_u32(&header_contents[4..8]);
+        let image_width = BigEndian::read_u32(&header_contents[8..0xC]);
+        let image_height = BigEndian::read_u32(&header_contents[0xC..0x10]);
+        let grid_width = BigEndian::read_u32(&header_contents[0x10..0x14]);
+        let grid_height = BigEndian::read_u32(&header_contents[0x14..0x18]);
+        let image_count = BigEndian::read_u32(&header_contents[0x18..0x1C]);
+        let mut layer_enabled = [false; 12];
+    
+        for i in 0..12 {
+            layer_enabled[i] = header_contents
+                .get(0x1C + i)
+                .copied()
+                .unwrap_or(0) != 0;
+        }
+
+        let info_offset = BigEndian::read_u32(&header_contents[0x28..0x2C]) as usize;
+        let image_data_offset = BigEndian::read_u32(&header_contents[0x2C..0x30]) as usize;
+
+        Header {
+            _unk_4,
+            image_width,
+            image_height,
+            _grid_width: grid_width,
+            _grid_height: grid_height,
+            image_count,
+            _layer_enabled: layer_enabled,
+            info_offset,
+            image_data_offset
+        }
+    }
+}
+
+/// A structure containing information on entries in the grid.
+/// Unknown fields are named based on the file offset.
+/// 
+/// ### Fields
+/// - `enabled`: Indicates whether or not this cell should be shown.
+/// - `scene_index`: Indicates which scene index this cell is to be shown on.
+/// - `grid_x`: The row in which the cell is rendered.
+/// - `grid_y`:The column in which the cell is rendered.
+/// - `main_image_index`: The CMPR image this cell will render, if any
+/// - `mask_image_index`: The I4 mask this cell will apply to the image, if any
+/// - `_unk_c`: Currently an unknown value.
+/// - `_unk_e`: Currently an unknown value.
+struct GridEntry {
+    enabled: i16,
+    scene_index: i16,
+    grid_x: i16,
+    grid_y: i16,
+    main_image_index: i16,
+    mask_image_index: i16,
+    _unk_c: i16,
+    _unk_e: i16,
+}
+
+impl GridEntry {
+    /// Returns if the entry is enabled.
+    /// 
+    /// ### Returns
+    /// `true` if the entry is enabled.
+    fn is_enabled(&self) -> bool {
+        self.enabled != 0
+    }
+}
+
+
+
+/// A list of compressed or uncompressed images.
+    /// ### Fields
+    /// - `image_width`: The width of every image, in pixels.
+    /// - `image_height`: The height of every image, in pixels.
+    /// - `images`: The images.
+struct ImageList {
+    image_width: u32,
+    image_height: u32,
+    grid_entries: Vec<GridEntry>,
+    images: Vec<Vec<u8>>
+} 
+
 
 
 pub mod bgst_processing {
     use super::*;
-    use image::*;
-    use gctex;
-    use byteorder::{ByteOrder, BigEndian};
-    
-
-    const HEADER_SIZE: usize = 0x40;
-    const GRID_ENTRY_SIZE: usize = 0x10;
-    const COMPRESSED_IMAGE_SIZE: usize = 0x20000;
-
-    /// A stripped-down version of the header found
-    /// in BGST files. Unknown fields are named based
-    /// on the file offset in a BGST file.
-    /// ### Fields
-    /// - `_unk_4`: Currently an unknown value.
-    /// - `image_width`: The width of every image in the grid, in pixels.
-    /// - `image_height`: The height of every image in the grid, in pixels.
-    /// - `grid_width`: The number of rows the grid has.
-    /// - `grid_height`: The number of columns the grid has.
-    /// - `image_count`: The number of images in the file.
-    /// - `layer_enabled`: Indicates which of the 12 rendering layers from the game are available to entries.
-    /// - `info_offset`: Offset to entry info.
-    /// - `image_data_offset`: Offset to the array of compressed image data.
-    pub struct Header {
-        _unk_4: u32,
-        image_width: u32,
-        image_height: u32,
-        _grid_width: u32,
-        _grid_height: u32,
-        image_count: u32,
-        _layer_enabled: [bool; 12],
-        info_offset: usize,
-        image_data_offset: usize
-    }
-
-    pub struct GridEntry {
-        enabled: i16,
-        scene_index: i16,
-        grid_x: i16,
-        grid_y: i16,
-        main_image_index: i16,
-        mask_image_index: i16,
-        _unk_c: i16,
-        _unk_e: i16,
-    }
 
     /// A list of compressed or uncompressed images.
     /// ### Fields
@@ -62,47 +158,7 @@ pub mod bgst_processing {
         images: Vec<Vec<u8>>
     }
 
-    impl Header {
-        /// Creates a stripped-down header struct from a file
-        /// that has had its header **pre-validated**.
-        /// ### Parameters
-        /// - `header_contents`: Data containing the raw header.
-        /// ### Returns
-        /// - a `Header` struct
-        pub fn from_validated_header_bytes(
-            header_contents: &Vec<u8>
-        ) -> Header {
-            let _unk_4 = BigEndian::read_u32(&header_contents[4..8]);
-            let image_width = BigEndian::read_u32(&header_contents[8..0xC]);
-            let image_height = BigEndian::read_u32(&header_contents[0xC..0x10]);
-            let grid_width = BigEndian::read_u32(&header_contents[0x10..0x14]);
-            let grid_height = BigEndian::read_u32(&header_contents[0x14..0x18]);
-            let image_count = BigEndian::read_u32(&header_contents[0x18..0x1C]);
-            let mut layer_enabled = [false; 12];
-        
-            for i in 0..12 {
-                layer_enabled[i] = header_contents
-                    .get(0x1C + i)
-                    .copied()
-                    .unwrap_or(0) != 0;
-            }
-
-            let info_offset = BigEndian::read_u32(&header_contents[0x28..0x2C]) as usize;
-            let image_data_offset = BigEndian::read_u32(&header_contents[0x2C..0x30]) as usize;
-
-            Header {
-                _unk_4,
-                image_width,
-                image_height,
-                _grid_width: grid_width,
-                _grid_height: grid_height,
-                image_count,
-                _layer_enabled: layer_enabled,
-                info_offset,
-                image_data_offset
-            }
-        }
-    }
+    
 
     /// Validates a BGST header.
     /// ### Parameters
