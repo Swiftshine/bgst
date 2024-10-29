@@ -1,22 +1,22 @@
-use gctex;
-// use std::io;
-// use std::fs;
+use anyhow::{Result, bail};
+use std::fs;
+use std::io::Cursor;
 
-pub mod image_processing {
-
-}
 
 pub mod bgst_processing {
-    use anyhow::{Result, bail};
+    use super::*;
+    use image::*;
+    use gctex;
     use byteorder::{ByteOrder, BigEndian};
+    
 
     const HEADER_SIZE: usize = 0x40;
+    const GRID_ENTRY_SIZE: usize = 0x10;
     const COMPRESSED_IMAGE_SIZE: usize = 0x20000;
 
     /// A stripped-down version of the header found
     /// in BGST files. Unknown fields are named based
     /// on the file offset in a BGST file.
-    /// 
     /// ### Fields
     /// - `_unk_4`: Currently an unknown value.
     /// - `image_width`: The width of every image in the grid, in pixels.
@@ -31,12 +31,35 @@ pub mod bgst_processing {
         _unk_4: u32,
         image_width: u32,
         image_height: u32,
-        grid_width: u32,
-        grid_height: u32,
+        _grid_width: u32,
+        _grid_height: u32,
         image_count: u32,
-        layer_enabled: [bool; 12],
+        _layer_enabled: [bool; 12],
         info_offset: usize,
         image_data_offset: usize
+    }
+
+    pub struct GridEntry {
+        enabled: i16,
+        scene_index: i16,
+        grid_x: i16,
+        grid_y: i16,
+        main_image_index: i16,
+        mask_image_index: i16,
+        _unk_c: i16,
+        _unk_e: i16,
+    }
+
+    /// A list of compressed or uncompressed images.
+    /// ### Fields
+    /// - `image_width`: The width of every image, in pixels.
+    /// - `image_height`: The height of every image, in pixels.
+    /// - `images`: The images.
+    pub struct ImageList {
+        image_width: u32,
+        image_height: u32,
+        grid_entries: Vec<GridEntry>,
+        images: Vec<Vec<u8>>
     }
 
     impl Header {
@@ -44,11 +67,11 @@ pub mod bgst_processing {
         /// that has had its header **pre-validated**.
         /// ### Parameters
         /// - `header_contents`: Data containing the raw header.
+        /// ### Returns
+        /// - a `Header` struct
         pub fn from_validated_header_bytes(
             header_contents: &Vec<u8>
         ) -> Header {
-
-            // this value is often seen to be 0x11
             let _unk_4 = BigEndian::read_u32(&header_contents[4..8]);
             let image_width = BigEndian::read_u32(&header_contents[8..0xC]);
             let image_height = BigEndian::read_u32(&header_contents[0xC..0x10]);
@@ -71,10 +94,10 @@ pub mod bgst_processing {
                 _unk_4,
                 image_width,
                 image_height,
-                grid_width,
-                grid_height,
+                _grid_width: grid_width,
+                _grid_height: grid_height,
                 image_count,
-                layer_enabled,
+                _layer_enabled: layer_enabled,
                 info_offset,
                 image_data_offset
             }
@@ -84,6 +107,8 @@ pub mod bgst_processing {
     /// Validates a BGST header.
     /// ### Parameters
     /// - `file_contents`: The BGST file to be validated.
+    /// ### Returns
+    /// - `true` if the given header was valid
     pub fn validate_header(
         file_contents: &Vec<u8>
     ) -> bool {
@@ -97,13 +122,51 @@ pub mod bgst_processing {
         true
     }
 
+    pub fn apply_mask(
+        main_image: &Vec<u8>,
+        mask_image: &Vec<u8>,
+        width: u32,
+        height: u32
+    ) -> Result<Vec<u8>> {
+        if main_image.len() != mask_image.len() {
+            bail!("the image sizes are not equal!");
+        }
+    
+        // decode the main and mask images from raw rgba bytes
+
+        let main_img: RgbaImage = ImageBuffer::from_raw(width, height, main_image.clone())
+            .ok_or_else(|| anyhow::anyhow!("failed to decode main image"))?;
+        let mask_img: RgbaImage = ImageBuffer::from_raw(width, height, mask_image.clone())
+            .ok_or_else(|| anyhow::anyhow!("failed to decode mask image"))?;
+    
+        let mut output_img = RgbaImage::new(width, height);
+    
+
+        for (x, y, pixel) in output_img.enumerate_pixels_mut() {
+            let main_pixel = main_img.get_pixel(x, y);
+            let mask_pixel = mask_img.get_pixel(x, y);
+    
+            // if the mask pixel is black (r=0, g=0, b=0), set alpha of main image to 0
+            if mask_pixel[0] == 0 && mask_pixel[1] == 0 && mask_pixel[2] == 0 {
+                *pixel = Rgba([main_pixel[0], main_pixel[1], main_pixel[2], 0]); // make transparent
+            } else {
+                *pixel = *main_pixel; // keep original pixel
+            }
+        }
+    
+        let output_bytes = output_img.into_raw();
+    
+        Ok(output_bytes)
+    }
+    
     /// Attempts to return the RGBA of every image.
-    /// 
     /// ### Parameters
     /// - `bgst_contents`: The raw data of a bgst3 file.
+    /// ### Returns
+    /// - a `CompressedImageList` struct
     pub fn get_raw_images(
         bgst_contents: &Vec<u8>
-    ) -> Result<Vec<Vec<u8>>> {
+    ) -> Result<ImageList> {
 
         if !validate_header(&bgst_contents) {
             bail!("file is not a valid BGST file");
@@ -116,18 +179,49 @@ pub mod bgst_processing {
         // (most likely) an I4 mask.
         
         // if this is inaccurate, i guess i'll find out the hard way
+  
+        let mut grid_entries = Vec::new();
         
-        let mut result = Vec::new();
+        let mut current_offset = header.info_offset;
+
+        while current_offset < header.image_data_offset {
+            let enabled = BigEndian::read_i16(&bgst_contents[current_offset..current_offset + 2]);
+            let scene_index = BigEndian::read_i16(&bgst_contents[current_offset + 2..current_offset + 4]);
+            let grid_x = BigEndian::read_i16(&bgst_contents[current_offset + 4..current_offset + 6]);
+            let grid_y = BigEndian::read_i16(&bgst_contents[current_offset + 6..current_offset + 8]);
+            let main_image_index = BigEndian::read_i16(&bgst_contents[current_offset + 8..current_offset + 0xA]);
+            let mask_image_index = BigEndian::read_i16(&bgst_contents[current_offset + 0xA..current_offset + 0xC]);
+            let _unk_c = BigEndian::read_i16(&bgst_contents[current_offset + 0xC..current_offset + 0xE]);
+            let _unk_e = BigEndian::read_i16(&bgst_contents[current_offset + 0xE..current_offset + 0x10]);
+
+            let entry = GridEntry {
+                enabled,
+                scene_index,
+                grid_x,
+                grid_y,
+                main_image_index,
+                mask_image_index,
+                _unk_c,
+                _unk_e
+            };
+
+            grid_entries.push(entry);
+
+            current_offset += GRID_ENTRY_SIZE;
+        }
+
+              
+        let mut images = Vec::new();
 
         let image_data = Vec::from(&bgst_contents[header.image_data_offset..]);
 
-        for i in 0..header.image_count {
-            let data = Vec::from(&image_data[i as usize * COMPRESSED_IMAGE_SIZE..i as usize * COMPRESSED_IMAGE_SIZE + COMPRESSED_IMAGE_SIZE]);
-            
-            if i % 2 == 0 {
-                // even
+        for i in 0..grid_entries.len() {
+            let entry = &grid_entries[i];
+
+            if entry.main_image_index > -1 {
+                let encoded = Vec::from(&image_data[entry.main_image_index as usize * COMPRESSED_IMAGE_SIZE..entry.main_image_index as usize * COMPRESSED_IMAGE_SIZE + COMPRESSED_IMAGE_SIZE]);
                 let decoded = gctex::decode(
-                    &data,
+                    &encoded,
                     header.image_width,
                     header.image_height,
                     gctex::TextureFormat::CMPR,
@@ -135,11 +229,13 @@ pub mod bgst_processing {
                     0
                 );
 
-                result.push(decoded);
-            } else {
-                // odd
+                images.push(decoded);
+            }
+
+            if entry.mask_image_index > -1 {
+                let encoded = Vec::from(&image_data[entry.mask_image_index as usize * COMPRESSED_IMAGE_SIZE..entry.mask_image_index as usize * COMPRESSED_IMAGE_SIZE + COMPRESSED_IMAGE_SIZE]);
                 let decoded = gctex::decode(
-                    &data,
+                    &encoded,
                     header.image_width,
                     header.image_height,
                     gctex::TextureFormat::I4,
@@ -147,12 +243,100 @@ pub mod bgst_processing {
                     0
                 );
 
-                result.push(decoded);
+                images.push(decoded);
+            }
+        }
+
+        let result = ImageList {
+            image_width: header.image_width,
+            image_height: header.image_height,
+            grid_entries,
+            images
+        };
+
+        Ok(result)
+    } 
+
+    fn get_png_images(
+        raw_images: &ImageList
+    ) -> Result<Vec<Vec<u8>>> {
+        let mut result = Vec::new();
+
+        for raw_image in &raw_images.images {
+            if let Some(img) = RgbaImage::from_raw(
+                raw_images.image_width,
+                raw_images.image_height,
+                raw_image.to_owned()
+            ) {
+                let mut buffer = Cursor::new(Vec::new());
+
+                img.write_to(&mut buffer, ImageFormat::Png)?;
+
+                result.push(buffer.into_inner());
             }
         }
 
         Ok(result)
-    } 
+    }
+
+    pub fn extract_bgst(
+        input_filename: &str
+    ) -> Result<()> {
+
+        println!("checking if file exists...");
+
+        if !fs::exists(input_filename).unwrap() {
+            bail!(format!("file {} does not exist", input_filename));
+        }
+
+        let file_contents = fs::read(input_filename)?;
+
+        println!("validating header...");
+
+        if !validate_header(&file_contents) {
+            bail!(format!("file {} is not a valid BGST file", input_filename));
+        }
+
+        println!("extracting raw images...");
+        let raw_image_list = get_raw_images(&file_contents)?;
+
+        println!("converting to png...");
+
+        let png_images = get_png_images(&raw_image_list)?;
+
+        println!("writing files...");
+
+        let folder_name = input_filename
+            .strip_suffix(".bgst3")
+            .unwrap()
+            .to_string();
+
+        match fs::exists(&folder_name) {
+            Ok(folder_exists) => {
+                if !folder_exists {
+                    let _ = fs::create_dir(&folder_name);
+                }
+            }
+
+            Err(_) => {
+                let _ = fs::create_dir(&folder_name);
+            }
+        }
+
+
+        for i in 0..png_images.len() {
+            let filename = folder_name.to_owned() + "/" + i.to_string().as_str() + ".png";
+            println!("\twriting file {filename}");
+            let _ = fs::write(
+                String::from(filename),
+                &png_images[i]
+            );
+        }
+
+        println!("done!");
+
+        Ok(())
+    }
 }
 
 

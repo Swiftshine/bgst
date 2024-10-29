@@ -1,22 +1,16 @@
-// use std::{env, fs};
-use anyhow::Result;
+use std::env;
+use anyhow::{Result, bail};
 
 fn main() -> Result<()> {
-    // let args: Vec<String> = env::args().collect();
+    let args: Vec<String> = env::args().collect();
 
-    // if args.len() != 2 {
-    //     return Err("incorrect argument count".into());
-    // }
+    if args.len() != 2 {
+        bail!("incorrect argument count");
+    }
 
-    // let filename = &args[1];
+    let filename = &args[1];
 
-    // if !fs::exists(&filename).unwrap() {
-    //     return Err(format!("file {} does not exist", filename).into());
-    // }
+    let result = bgst::bgst_processing::extract_bgst(&filename);
 
-    // let _file_contents = fs::read(&filename);
-
-
-
-    Ok(())
+    result
 }
