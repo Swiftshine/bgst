@@ -16,6 +16,7 @@ pub mod bgst_processing {
     /// A stripped-down version of the header found
     /// in BGST files. Unknown fields are named based
     /// on the file offset in a BGST file.
+    /// 
     /// ### Fields
     /// - `_unk_4`: Currently an unknown value.
     /// - `image_width`: The width of every image in the grid, in pixels.
@@ -39,6 +40,10 @@ pub mod bgst_processing {
     }
 
     impl Header {
+        /// Creates a stripped-down header struct from a file
+        /// that has had its header **pre-validated**.
+        /// ### Parameters
+        /// - `header_contents`: Data containing the raw header.
         pub fn from_validated_header_bytes(
             header_contents: &Vec<u8>
         ) -> Header {
@@ -76,7 +81,10 @@ pub mod bgst_processing {
         }
     }
 
-    fn validate_header(
+    /// Validates a BGST header.
+    /// ### Parameters
+    /// - `file_contents`: The BGST file to be validated.
+    pub fn validate_header(
         file_contents: &Vec<u8>
     ) -> bool {
 
@@ -151,14 +159,14 @@ pub mod bgst_processing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // todo - rewrite these tests properly
 
-    // #[test]
-    // fn invalid_bgst() {
-    //     assert!(
-    //         bgst_processing::get_raw_images(&vec![]).is_err()
-    //     );
-    // }
+
+    #[test]
+    fn invalid_bgst() {
+        assert!(
+            !bgst_processing::validate_header(&vec![])
+        );
+    }
 
     // #[test]
     // fn header_only() {
