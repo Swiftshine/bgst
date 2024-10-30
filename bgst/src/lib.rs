@@ -387,9 +387,11 @@ pub fn extract_bgst(
 
     match fs::exists(&folder_name) {
         Ok(folder_exists) => {
-            if !folder_exists {
-                let _ = fs::create_dir(&folder_name);
+            if folder_exists {
+                // remove contents
+                fs::remove_dir_all(&folder_name).unwrap();
             }
+            fs::create_dir(&folder_name).unwrap();
         }
 
         Err(_) => {
