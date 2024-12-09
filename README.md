@@ -1,9 +1,4 @@
 # bgst
-A tool for processing the BGST format found in *Kirby's Epic Yarn*.
+Processing the BGST format found in *Kirby's Epic Yarn*.
 
-### Features
-- [X] Extract all images
-- [X] Apply masks to images
-  - PARTIAL support!
-- [ ] Create a grid of images
-- [ ] Support importing BGSTs
+This repo is deprecated. See [Quilt](https://github.com/Swiftshine/Quilt).
